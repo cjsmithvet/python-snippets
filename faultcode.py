@@ -78,7 +78,7 @@ class MotorDriveInterface:
         response = self.read_telnet()
         return response
 
-    def print_display(self):
+    def get_display_string(self):
         if not self.connected:
             raise MotorDriveInterfaceError
         fault = self.get_integer_value('DRV.FAULT1')
@@ -90,21 +90,14 @@ class MotorDriveInterface:
                 displayed = "n " + str(warning)
             else:
                 displayed = "o0"
-        print(displayed)
+        return displayed
 
-    def emulate_drive_display(self):
+    def get_name(self):
         if not self.connected:
             raise MotorDriveInterfaceError
-        print("Display reads: ", end='') # don't end with a newline
-        self.print_display()
+        return self.get_string_value('DRV.NAME')
 
-    def print_name(self):
-        if not self.connected:
-            raise MotorDriveInterfaceError
-        response = self.get_string_value('DRV.NAME')
-        print("name " + response, end='')
-
-    def print_vbus_voltage(self):
+    def get_vbus_voltage(self):
         if not self.connected:
             raise MotorDriveInterfaceError
         try:
@@ -112,15 +105,18 @@ class MotorDriveInterface:
         except MotorDriveInterfaceError:
             print("Error getting voltage!")
         else:
-            print(self.ip_address + " VBUS voltage: " + str(voltage) + " [Vdc]")
+            return voltage
 
     def just_print_everything(self):
         if not self.connected:
             self.connect()
         print("Address " + self.ip_address + ", ", end='')
-        self.print_name()
-        self.emulate_drive_display()
-        print("")
+        name = self.get_name()
+        print("name " + name, end='')
+        display_string = self.get_display_string()
+        print("Display reads: " + display_string)
+        voltage = self.get_vbus_voltage()
+        print("VBUS voltage: " + str(voltage) + " [Vdc]")
         sys.stdout.flush()
 
 tn1 = MotorDriveInterface("10.0.0.166")
@@ -137,7 +133,6 @@ tn3.disconnect()
 
 tn4 = MotorDriveInterface("10.0.0.101")
 tn4.just_print_everything()
-tn4.print_vbus_voltage()
 tn4.disconnect()
 
 
