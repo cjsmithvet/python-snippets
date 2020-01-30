@@ -3,31 +3,10 @@ import re
 import sys
 import telnetlib
 
-class MotorDriveInterfaceError(Exception): pass
-class ValueNotFoundError(MotorDriveInterfaceError): pass
+#
+# Bunch of helper functions
+#
 
-def old_read_telnet(tn):
-    a = ''
-    try:
-        while True:
-            a += tn.rawq_getchar()
-    except:
-        pass
-    return a
-
-def read_telnet(tn):
-    while True:
-        line = tn.read_until("\n", timeout=1)  # Read one line
-        if (b"-->") in line:  # last line, no more read
-            break
-        else:
-            oldline = line
-    if ("Command was not found") in oldline:
-        raise MotorDriveInterfaceError
-    return oldline
-
-# TODO make this more robust (what if st has no numbers represented?)
-# as is, this might throw ValueError
 def extract_float_from_string(st):
     try:
         substring = re.findall(r'[\d\.\d]+', st)
@@ -36,102 +15,129 @@ def extract_float_from_string(st):
         raise ValueNotFoundError
     return retval
 
-def get_float_value(tn, name):
-    command = name + '\r\n'
-    tn.write(command)
-    response = read_telnet(tn)
-    value = extract_float_from_string(response)
-    return value
+#
+# OK now the well-organized stuff
+#
 
-def get_integer_value(tn, name):
-    command = name + '\r\n'
-    tn.write(command)
-    response = read_telnet(tn)
-    digit = lambda x: int(filter(str.isdigit, x) or 0)
-    value = digit(response)
-    return value
+class MotorDriveInterfaceError(Exception): pass
+class ValueNotFoundError(MotorDriveInterfaceError): pass
 
-def get_string_value(tn, name):
-    command = name + '\r\n'
-    tn.write(command)
-    response = read_telnet(tn)
-    return response
+class MotorDriveInterface:
+    '''Connect to a Kollmorgen motor drive and return information about it'''
+    def __init__(self, address="10.0.0.166"):
+        self.ip_address = address
+        self.tn = telnetlib.Telnet()
+        self.connected = False
 
-def print_display(tn):
-    fault = get_integer_value(tn, 'DRV.FAULT1')
-    warning = get_integer_value(tn, 'DRV.WARNING1')
-    if fault != 0:
-        displayed = "F " + str(fault)
-    else:
-        if warning != 0:
-            displayed = "n " + str(warning)
-        else:
-            displayed = "o0"
-    print(displayed)
-
-def emulate_drive_display(host):
-    tn = telnetlib.Telnet()
-    # tn.set_debuglevel(3)
-    try:
-        tn.open(host, timeout=1)
-    except:
-        print("Cannot reach host " + host + "!")
-        sys.stdout.flush()
-    else:
-        print("Display reads: ", end='') # don't end with a newline
-        print_display(tn)
-        tn.close()
-
-def print_vbus_voltage(host):
-    tn = telnetlib.Telnet()
-    try:
-        tn.open(host, timeout=1)
-    except:
-        print("Cannot reach host " + host + "!")
-        sys.stdout.flush()
-    else:
+    def connect(self):
         try:
-            voltage = get_float_value(tn, 'VBUS.VALUEQZX')
+            self.tn.open(self.ip_address, timeout=1)
+        except:
+            self.connected = False
+            print("Cannot reach host " + self.ip_address + "!")
+            sys.stdout.flush()
+        else:
+            self.connected = True
+
+    def disconnect(self):
+        if self.connected:
+            self.tn.close()
+            self.connected = False
+
+    def read_telnet(self):
+        if not self.connected:
+            raise MotorDriveInterfaceError
+        while True:
+            line = self.tn.read_until("\n", timeout=1)  # Read one line
+            if (b"-->") in line:  # last line, no more read
+                break
+            else:
+                oldline = line
+        if ("Command was not found") in oldline:
+            raise MotorDriveInterfaceError
+        return oldline
+
+    def get_float_value(self, name):
+        command = name + '\r\n'
+        self.tn.write(command)
+        response = self.read_telnet()
+        value = extract_float_from_string(response)
+        return value
+
+    def get_integer_value(self, name):
+        command = name + '\r\n'
+        self.tn.write(command)
+        response = self.read_telnet()
+        digit = lambda x: int(filter(str.isdigit, x) or 0)
+        value = digit(response)
+        return value
+
+    def get_string_value(self, name):
+        command = name + '\r\n'
+        self.tn.write(command)
+        response = self.read_telnet()
+        return response
+
+    def print_display(self):
+        if not self.connected:
+            raise MotorDriveInterfaceError
+        fault = self.get_integer_value('DRV.FAULT1')
+        warning = self.get_integer_value('DRV.WARNING1')
+        if fault != 0:
+            displayed = "F " + str(fault)
+        else:
+            if warning != 0:
+                displayed = "n " + str(warning)
+            else:
+                displayed = "o0"
+        print(displayed)
+
+    def emulate_drive_display(self):
+        if not self.connected:
+            raise MotorDriveInterfaceError
+        print("Display reads: ", end='') # don't end with a newline
+        self.print_display()
+
+    def print_name(self):
+        if not self.connected:
+            raise MotorDriveInterfaceError
+        response = self.get_string_value('DRV.NAME')
+        print("name " + response, end='')
+
+    def print_vbus_voltage(self):
+        if not self.connected:
+            raise MotorDriveInterfaceError
+        try:
+            voltage = self.get_float_value('VBUS.VALUE')
         except MotorDriveInterfaceError:
             print("Error getting voltage!")
         else:
-            print(host + " VBUS voltage: " + str(voltage) + " [Vdc]")
-        tn.close()
+            print(self.ip_address + " VBUS voltage: " + str(voltage) + " [Vdc]")
 
-def print_name(host):
-    tn = telnetlib.Telnet()
-    tn.open(host, timeout=1)
-    response = get_string_value(tn, 'DRV.NAME')
-    print("name " + response, end='')
-    tn.close()
+    def just_print_everything(self):
+        if not self.connected:
+            self.connect()
+        print("Address " + self.ip_address + ", ", end='')
+        self.print_name()
+        self.emulate_drive_display()
+        print("")
+        sys.stdout.flush()
 
-HOST = "10.0.0.166"
-print("Capture Far: Address " + HOST + ", ", end='')
-print_name(HOST)
-emulate_drive_display(HOST)
-print("")
-sys.stdout.flush()
+tn1 = MotorDriveInterface("10.0.0.166")
+tn1.just_print_everything()
+tn1.disconnect()
 
-HOST = "10.0.0.125"
-print("Capture Near: Address " + HOST + ", ", end='')
-print_name(HOST)
-emulate_drive_display(HOST)
-print("")
-sys.stdout.flush()
+tn2 = MotorDriveInterface("10.0.0.125")
+tn2.just_print_everything()
+tn2.disconnect()
 
-HOST = "10.0.0.120"
-print("Payout Far: Address " + HOST + ", ", end='')
-print_name(HOST)
-emulate_drive_display(HOST)
-print("")
-sys.stdout.flush()
+tn3 = MotorDriveInterface("10.0.0.120")
+tn3.just_print_everything()
+tn3.disconnect()
 
-HOST = "10.0.0.101"
-print("Payout Near: Address " + HOST + ", ", end='')
-print_name(HOST)
-emulate_drive_display(HOST)
-print("")
-sys.stdout.flush()
-print_vbus_voltage(HOST)
+tn4 = MotorDriveInterface("10.0.0.101")
+tn4.just_print_everything()
+tn4.print_vbus_voltage()
+tn4.disconnect()
 
 
