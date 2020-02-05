@@ -15,9 +15,9 @@ sock.settimeout(5)
 # 
 
 # hardcode for work-at-home
-# server_address = ('10.0.0.166', 5002)
+server_address = ('10.0.0.113', 5002)
 # doesn't work: broadcast blocked by firewall?
-server_address = ('10.0.255.255', 5002)
+# server_address = ('10.0.255.255', 5002)
 # doesn't work: broadcast blocked by firewall?
 # server_address = ('10.0.0.255', 5002)
 
@@ -34,6 +34,8 @@ server_address = ('10.0.255.255', 5002)
 
 message = bytearray([0x12, 0xaf, 0x12, 0xaf, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x32, 0x35, 0x35, 0x2e, 0x32, 0x35, 0x35, 0x2e, 0x30, 0x2e, 0x30,  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa4, 0x03, 0x00, 0x00])
 
+
+
 #
 # See who's out there
 #
@@ -45,14 +47,29 @@ try:
     sys.stdout.flush()
     sent = sock.sendto(message, server_address)
 
-    # Receive response
+    # Receive responses
     print ('waiting to receive')
     sys.stdout.flush()
+
+    # Listen until timeout
     data, server = sock.recvfrom(4096)
     print ('received "%s"' % data)
     sys.stdout.flush()
 
-except:
+    # Try to parse the packet (here there be dragons)
+    # Name starts at byte 5 and appears to be null terminated
+    name_substring = data[5:17]
+    name_substring = name_substring[:name_substring.index(chr(0))]
+    print ('name_substring %s' % name_substring)
+    sys.stdout.flush()
+    # Address starts at byte 17 and appears to be null terminated
+    addr_substring = data[17:]
+    addr_index = addr_substring.index(chr(0))
+    addr_substring = addr_substring[:addr_substring.index(chr(0))]
+    print ('addr_substring %s' % addr_substring)
+    sys.stdout.flush()
+
+except (socket.timeout, socket.error):
     pass
 
 finally:
