@@ -3,7 +3,6 @@ import logging
 import re
 import socket
 import telnetlib
-import threading
 import time
 
 
@@ -293,43 +292,42 @@ class DriveAgent(object):
         self._voltage = None
         self._current = None
         self._temp = None
-        self._data_lock = threading.Lock()
         self.finished = False  # Set to True when the thread for this agent should terminate.
 
     def query(self):
-        with self._data_lock:
-            try:
-                self._display_string = self._drive_interface.get_display_string()
-                self._voltage = self._drive_interface.get_vbus_voltage_string()
-                self._current = self._drive_interface.get_motor_current_string()
-                self._temp = self._drive_interface.get_motor_temp_string()
-            except MotorDriveConnectionError:
-                # Other than the name and address, which don't change once established,
-                # do not return the other results; they are stale or misleading.
-                self._display_string = "None"
-                self._voltage = "None"
-                self._current = "None"
-                self._temp = "None"
+        try:
+            self._display_string = self._drive_interface.get_display_string()
+            self._voltage = self._drive_interface.get_vbus_voltage_string()
+            self._current = self._drive_interface.get_motor_current_string()
+            self._temp = self._drive_interface.get_motor_temp_string()
+        except MotorDriveConnectionError:
+            # Other than the name and address, which don't change once established,
+            # do not return the other results; they are stale or misleading.
+            self._display_string = "None"
+            self._voltage = "None"
+            self._current = "None"
+            self._temp = "None"
 
     def print_all_values(self):
-        with self._data_lock:
-            # printstring = self._drive_name + " (" + self._drive_address + "): "
-            name = self._drive_name if not None else "None"
-            address = self._drive_address if not None else "None"
-            display = self._display_string if not None else "None"
-            voltage = self._voltage if not None else "None"
-            current = self._current if not None else "None"
-            temp = self._temp if not None else "None"
-            printstring = "{} ({}):".format(name, address)
-            printdisplay = "   Display {}".format(display)
-            printvolt = "  Voltage {}".format(voltage)
-            printcurrent = "  Current {}".format(current)
-            printtemp = "  Temperature {}".format(temp)
-            print(printstring)
-            print(printdisplay)
-            print(printvolt)
-            print(printcurrent)
-            print(printtemp)
+        name = self._drive_name if not None else "None"
+        address = self._drive_address if not None else "None"
+        display = self._display_string if not None else "None"
+        voltage = self._voltage if not None else "None"
+        current = self._current if not None else "None"
+        temp = self._temp if not None else "None"
+        printname = "{} ({}):".format(name, address)
+        printdisplay = "  Display {}".format(display)
+        printvolt = "  Voltage {}".format(voltage)
+        printcurrent = "  Current {}".format(current)
+        printtemp = "  Temperature {}".format(temp)
+        print(printname)
+        print(printdisplay)
+        print(printvolt)
+        print(printcurrent)
+        print(printtemp)
+        # Why doesn't the following work?
+        # fullstring = "{}: Address {}   Display {}   Voltage {}   Current {}   Temperature {}".format(name, address, display, voltage, current, temp)
+        # print(fullstring)
 
     def shutdown(self):
         self._drive_interface.shutdown()
@@ -346,9 +344,7 @@ class MotorDriveService(object):
     def __init__(self, discovery_address):
         self._logger = logging.getLogger(__name__)
         self.finished = False
-        self._agents_lock = threading.Lock()
         self._agents = {}
-        self._threads = {}
         self._discovery_address = discovery_address
         self._discover_drives()
         self._next_heartbeat_time = time.time()  # may as well have one at the outset
@@ -361,49 +357,22 @@ class MotorDriveService(object):
         # See who's out there and talking to us now
         # This function can take several seconds to return
         response_packets = KollmorgenDriveInterface.discover_drives(self._discovery_address)
-
-        # We acquire the agents lock so that we can modify the _agents list in peace
-        with self._agents_lock:
-            # Remember what drives we thought were out there before
-            previous_drive_addresses = set(self._agents.keys())
-            for packet in response_packets:
-                drive_name, drive_ip_address = KollmorgenDriveInterface.parse_packet(packet)
-                if drive_ip_address in previous_drive_addresses:
-                    # This one requires no changes to _agents or _threads
-                    previous_drive_addresses.remove(drive_ip_address)
-                    continue
-                # This drive is new!  Make an agent and a thread for it
-                self._logger.info("Drive found at %s", drive_ip_address)
-                agent = DriveAgent(drive_name, drive_ip_address)
-                thread = threading.Thread(target=MotorDriveService.agent_thread_function,
-                                          args=(agent, self))
-                thread.start()
-                self._agents[drive_ip_address] = agent
-                self._threads[drive_ip_address] = thread
-            # Anything left in this list is a drive that has stopped responding
-            for address in previous_drive_addresses:
-                self._logger.info("Drive no longer responding at %s", address)
-                self._agents[address].finished = True
-                self._threads[address].join()  # Block until the thread is actually done
-                del self._threads[address]
-                del self._agents[address]
-
-    @staticmethod
-    def agent_thread_function(drive_agent, parent):
-        while not parent.finished and not drive_agent.finished:
-            start_time = time.time()
-            drive_agent.query()
-            drive_agent.print_all_values()
-            end_time = time.time()
-            if end_time >= start_time + DRIVE_SERVICE_QUERY_PERIOD:
-                continue
-            time.sleep(DRIVE_SERVICE_QUERY_PERIOD - max(end_time - start_time, 0))
-        drive_agent.shutdown()
+        for packet in response_packets:
+            drive_name, drive_ip_address = KollmorgenDriveInterface.parse_packet(packet)
+            # Make an agent for this drive
+            self._logger.info("Drive found at %s", drive_ip_address)
+            agent = DriveAgent(drive_name, drive_ip_address)
+            self._agents[drive_ip_address] = agent
 
     def run(self):
         try:
             while not self.finished:
                 # self._rest_server.handle_request()
+                addresses = set(self._agents.keys())
+                for address in addresses:
+                    agent = self._agents[address]
+                    agent.query()
+                    agent.print_all_values()
                 time.sleep(1)
 
         except KeyboardInterrupt:
