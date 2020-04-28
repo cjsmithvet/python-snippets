@@ -1,7 +1,9 @@
 import argparse
+import gzip
 import logging
 import re
 import socket
+import sys
 import telnetlib
 import time
 
@@ -40,8 +42,8 @@ class MotorDriveConnectionError(MotorDriveInterfaceError):
 class TelnetInterface(object):
     """Handle a single telnet connection as a series of strings back and forth."""
 
-    def __init__(self, address=KOLLMORGEN_SINGLE_DRIVE_DEFAULT_ADDRESS, prompt=b"-->"):
-        self._logger = logging.getLogger(address)
+    def __init__(self, logger, address=KOLLMORGEN_SINGLE_DRIVE_DEFAULT_ADDRESS, prompt=b"-->"):
+        self._logger = logger
         self._ip_address = address
         self._tn = telnetlib.Telnet()
         self._connected = False
@@ -96,13 +98,14 @@ class TelnetInterface(object):
 class KollmorgenDriveInterface(object):
     """Connect to a Kollmorgen motor drive and return information about it."""
 
-    def __init__(self, drive_name, ip_address):
-        self._logger = logging.getLogger(drive_name)
+    def __init__(self, drive_name, ip_address, log_stream, logger):
+        self._log_stream = log_stream
+        self._logger = logger
         self._drive_name = drive_name
         self._ip_address = ip_address
         self._previous_fault = None
         self._previous_warning = None
-        self._telnet_interface = TelnetInterface(self._ip_address)
+        self._telnet_interface = TelnetInterface(logger, self._ip_address)
         self._telnet_interface.connect()
         self._is_active = True
 
@@ -114,9 +117,9 @@ class KollmorgenDriveInterface(object):
         # Bytes 17 - 28 perhaps, IP address encoded as ASCII, appears to be null terminated
         # Bytes 29 - 44 ???
         name_substring = datapacket[5:17]
-        name_substring = name_substring[:name_substring.index(chr(0))]
+        name_substring = name_substring[:name_substring.index(chr(0).encode('ascii'))]
         addr_substring = datapacket[17:]
-        addr_substring = addr_substring[:addr_substring.index(chr(0))]
+        addr_substring = addr_substring[:addr_substring.index(chr(0).encode('ascii'))]
         return name_substring, addr_substring
 
     @staticmethod
@@ -234,27 +237,19 @@ class KollmorgenDriveInterface(object):
         except ValueError:
             return None
 
-    def get_vbus_voltage_string(self):
+    def get_motor_current(self):
         if not self._is_active:
             return None
         try:
-            return self._get_string_value('VBUS.VALUE')
+            return self._get_float_value('DRV.ICONT')
         except ValueError:
             return None
 
-    def get_motor_current_string(self):
+    def get_motor_temp(self):
         if not self._is_active:
             return None
         try:
-            return self._get_string_value('DRV.ICONT')
-        except ValueError:
-            return None
-
-    def get_motor_temp_string(self):
-        if not self._is_active:
-            return None
-        try:
-            return self._get_string_value('MOTOR.TEMPC')
+            return self._get_integer_value('MOTOR.TEMPC')
         except ValueError:
             return None
 
@@ -283,9 +278,11 @@ class KollmorgenDriveInterface(object):
 class DriveAgent(object):
     """Handle fault/warning monitoring and bus voltage queries for a single drive."""
 
-    def __init__(self, drive_name, drive_ip_address):
+    def __init__(self, drive_name, drive_ip_address, log_stream, logger):
+        self._log_stream = log_stream
+        self._logger = logger
         self._unable_to_connect = False
-        self._drive_interface = KollmorgenDriveInterface(drive_name, drive_ip_address)
+        self._drive_interface = KollmorgenDriveInterface(drive_name, drive_ip_address, log_stream, logger)
         self._drive_name = drive_name
         self._drive_address = drive_ip_address
         self._display_string = None
@@ -297,9 +294,9 @@ class DriveAgent(object):
     def query(self):
         try:
             self._display_string = self._drive_interface.get_display_string()
-            self._voltage = self._drive_interface.get_vbus_voltage_string()
-            self._current = self._drive_interface.get_motor_current_string()
-            self._temp = self._drive_interface.get_motor_temp_string()
+            self._voltage = self._drive_interface.get_vbus_voltage()
+            self._current = self._drive_interface.get_motor_current()
+            self._temp = self._drive_interface.get_motor_temp()
         except MotorDriveConnectionError:
             # Other than the name and address, which don't change once established,
             # do not return the other results; they are stale or misleading.
@@ -308,26 +305,14 @@ class DriveAgent(object):
             self._current = "None"
             self._temp = "None"
 
-    def print_all_values(self):
+    def dump_all_values_to_logfile(self):
         name = self._drive_name if not None else "None"
-        address = self._drive_address if not None else "None"
+        # address = self._drive_address if not None else "None"
         display = self._display_string if not None else "None"
         voltage = self._voltage if not None else "None"
         current = self._current if not None else "None"
         temp = self._temp if not None else "None"
-        printname = "{} ({}):".format(name, address)
-        printdisplay = "  Display {}".format(display)
-        printvolt = "  Voltage {}".format(voltage)
-        printcurrent = "  Current {}".format(current)
-        printtemp = "  Temperature {}".format(temp)
-        print(printname)
-        print(printdisplay)
-        print(printvolt)
-        print(printcurrent)
-        print(printtemp)
-        # Why doesn't the following work?
-        # fullstring = "{}: Address {}   Display {}   Voltage {}   Current {}   Temperature {}".format(name, address, display, voltage, current, temp)
-        # print(fullstring)
+        self._log_stream.write("{}, {}, {}, {}, {}, {}\n".format(time.time(), name, display, voltage, current, temp))
 
     def shutdown(self):
         self._drive_interface.shutdown()
@@ -341,8 +326,9 @@ class MotorDriveService(object):
         MotorDriveService creates and destroys DriveAgent objects to interact with them.
     """
 
-    def __init__(self, discovery_address):
-        self._logger = logging.getLogger(__name__)
+    def __init__(self, discovery_address, log_stream, logger):
+        self._log_stream = log_stream
+        self._logger = logger
         self.finished = False
         self._agents = {}
         self._discovery_address = discovery_address
@@ -361,7 +347,7 @@ class MotorDriveService(object):
             drive_name, drive_ip_address = KollmorgenDriveInterface.parse_packet(packet)
             # Make an agent for this drive
             self._logger.info("Drive found at %s", drive_ip_address)
-            agent = DriveAgent(drive_name, drive_ip_address)
+            agent = DriveAgent(drive_name, drive_ip_address, self._log_stream, self._logger)
             self._agents[drive_ip_address] = agent
 
     def run(self):
@@ -372,7 +358,7 @@ class MotorDriveService(object):
                 for address in addresses:
                     agent = self._agents[address]
                     agent.query()
-                    agent.print_all_values()
+                    agent.dump_all_values_to_logfile()
                 time.sleep(1)
 
         except KeyboardInterrupt:
@@ -380,16 +366,29 @@ class MotorDriveService(object):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Motor Drive Service')
+    parser = argparse.ArgumentParser(description='Motor Drive Monitor')
 
     parser.add_argument('--discovery-address', type=str,
                         default=KOLLMORGEN_DEFAULT_DISCOVERY_ADDRESS + ":" + str(KOLLMORGEN_DEFAULT_DISCOVERY_PORT),
                         help='The address:port to broadcast to in order to listen for motor drives')
+    parser.add_argument('--log', type=str, default='-', help='Where to write logs to')
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.DEBUG)
-    logger = logging.getLogger("Motor Drive Service")
+    logging.basicConfig(format='%(asctime)s.%(msecs)03d %(levelname)s [%(name)s]: %(message)s', level=logging.DEBUG,
+                        datefmt='%Y-%m-%d %H:%M:%S')
+    logger = logging.getLogger("Motor Drive Monitor")
 
-    service = MotorDriveService(args.discovery_address)
-    logger.info("Starting up...")
-    service.run()
+    if args.log == '-':
+        log_stream = sys.stdout
+    elif args.log.endswith(".gz"):
+        log_stream = gzip.open(args.log, "a")
+    else:
+        log_stream = open(args.log, "a")  # "b" also?
+    try:
+        logger.info("Initializing...")
+        service = MotorDriveService(args.discovery_address, log_stream, logger)
+        logger.info("Starting up...")
+        service.run()
+    finally:
+        if log_stream != sys.stdout:
+            log_stream.close()
