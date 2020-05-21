@@ -1,0 +1,11 @@
+{
+  "age": 0.4344310760498047, 
+  "armed": 0, 
+  "connected": 1, 
+  "hardware_estopped": 1, 
+  "homed": 0, 
+  "ready": 0, 
+  "runstopped": 1, 
+  "software_estopped": 1, 
+  "timestamp": 316002910.39921
+}
